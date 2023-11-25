@@ -4,17 +4,20 @@
 . scripts/envVar.sh
 . scripts/utils.sh
 
+
 CHANNEL_NAME="$1"
 DELAY="$2"
 MAX_RETRY="$3"
 VERBOSE="$4"
+BFT="$5"
 : ${CHANNEL_NAME:="mychannel"}
 : ${DELAY:="3"}
 : ${MAX_RETRY:="5"}
 : ${VERBOSE:="false"}
+: ${BFT:=0}
 
 : ${CONTAINER_CLI:="docker"}
-: ${CONTAINER_CLI_COMPOSE:="${CONTAINER_CLI} compose"}
+: ${CONTAINER_CLI_COMPOSE:="${CONTAINER_CLI}-compose"}
 infoln "Using ${CONTAINER_CLI} and ${CONTAINER_CLI_COMPOSE}"
 
 if [ ! -d "channel-artifacts" ]; then
@@ -22,26 +25,39 @@ if [ ! -d "channel-artifacts" ]; then
 fi
 
 createChannelGenesisBlock() {
+  setGlobals 1
 	which configtxgen
 	if [ "$?" -ne 0 ]; then
 		fatalln "configtxgen tool not found."
 	fi
+	local bft_true=$1
 	set -x
-	configtxgen -profile TwoOrgsApplicationGenesis -outputBlock ./channel-artifacts/${CHANNEL_NAME}.block -channelID $CHANNEL_NAME
+
+	if [ $bft_true -eq 1 ]; then
+		configtxgen -profile ChannelUsingBFT -outputBlock ./channel-artifacts/${CHANNEL_NAME}.block -channelID $CHANNEL_NAME
+	else
+		configtxgen -profile ChannelUsingRaft -outputBlock ./channel-artifacts/${CHANNEL_NAME}.block -channelID $CHANNEL_NAME
+	fi
 	res=$?
 	{ set +x; } 2>/dev/null
   verifyResult $res "Failed to generate channel configuration transaction..."
 }
 
 createChannel() {
-	setGlobals 1 0
 	# Poll in case the raft leader is not set yet
 	local rc=1
 	local COUNTER=1
+	local bft_true=$1
+	infoln "Adding orderers"
 	while [ $rc -ne 0 -a $COUNTER -lt $MAX_RETRY ] ; do
 		sleep $DELAY
 		set -x
-		osnadmin channel join --channelID $CHANNEL_NAME --config-block ./channel-artifacts/${CHANNEL_NAME}.block -o localhost:7050 --ca-file "$ORDERER_CA" --client-cert "$ORDERER_ADMIN_TLS_SIGN_CERT" --client-key "$ORDERER_ADMIN_TLS_PRIVATE_KEY" >&log.txt
+    . scripts/orderer.sh ${CHANNEL_NAME}> /dev/null 2>&1
+    if [ $bft_true -eq 1 ]; then
+      . scripts/orderer2.sh ${CHANNEL_NAME}> /dev/null 2>&1
+      . scripts/orderer3.sh ${CHANNEL_NAME}> /dev/null 2>&1
+      . scripts/orderer4.sh ${CHANNEL_NAME}> /dev/null 2>&1
+    fi
 		res=$?
 		{ set +x; } 2>/dev/null
 		let rc=$res
@@ -53,11 +69,9 @@ createChannel() {
 
 # joinChannel ORG
 joinChannel() {
-  FABRIC_CFG_PATH=$PWD/../config/
   ORG=$1
-  PEER=$2
-  echo "org ${ORG} peer ${PEER}"
-  setGlobalsWithAdminKeys $ORG $PEER
+  FABRIC_CFG_PATH=$PWD/../config/
+  setGlobals $ORG
 	local rc=1
 	local COUNTER=1
 	## Sometimes Join takes time, hence retry
@@ -71,7 +85,7 @@ joinChannel() {
 		COUNTER=$(expr $COUNTER + 1)
 	done
 	cat log.txt
-	verifyResult $res "After $MAX_RETRY attempts, peer${PEER}.org${ORG} has failed to join channel '$CHANNEL_NAME' "
+	verifyResult $res "After $MAX_RETRY attempts, peer0.org${ORG} has failed to join channel '$CHANNEL_NAME' "
 }
 
 setAnchorPeer() {
@@ -79,34 +93,34 @@ setAnchorPeer() {
   ${CONTAINER_CLI} exec cli ./scripts/setAnchorPeer.sh $ORG $CHANNEL_NAME 
 }
 
-FABRIC_CFG_PATH=${PWD}/configtx
+
+## User attempts to use BFT orderer in Fabric network with CA
+if [ $BFT -eq 1 ] && [ -d "organizations/fabric-ca/ordererOrg/msp" ]; then
+  fatalln "Fabric network seems to be using CA. This sample does not yet support the use of consensus type BFT and CA together."
+fi
 
 ## Create channel genesis block
-infoln "Generating channel genesis block '${CHANNEL_NAME}.block'"
-createChannelGenesisBlock
-
 FABRIC_CFG_PATH=$PWD/../config/
 BLOCKFILE="./channel-artifacts/${CHANNEL_NAME}.block"
 
+infoln "Generating channel genesis block '${CHANNEL_NAME}.block'"
+FABRIC_CFG_PATH=${PWD}/configtx
+if [ $BFT -eq 1 ]; then
+  FABRIC_CFG_PATH=${PWD}/bft-config
+fi
+createChannelGenesisBlock $BFT
+
+
 ## Create channel
 infoln "Creating channel ${CHANNEL_NAME}"
-createChannel
+createChannel $BFT
 successln "Channel '$CHANNEL_NAME' created"
-
-
-cp -r ${PWD}/organizations/peerOrganizations/org1.example.com/peers/* ${PWD}/organizations/peerOrganizations/org1.example.com/users/
 
 ## Join all the peers to the channel
 infoln "Joining org1 peer to the channel..."
-joinChannel 1 0
-joinChannel 1 1
-joinChannel 1 2
-joinChannel 1 3
+joinChannel 1
 infoln "Joining org2 peer to the channel..."
-joinChannel 2 0
-joinChannel 2 1
-joinChannel 2 2
-joinChannel 2 3
+joinChannel 2
 
 ## Set the anchor peers for each org in the channel
 infoln "Setting anchor peer for org1..."
