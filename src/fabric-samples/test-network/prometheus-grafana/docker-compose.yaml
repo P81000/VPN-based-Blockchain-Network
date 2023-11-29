@@ -64,5 +64,5 @@ services:
 
 networks:
   default:
-      external: true
-      name: fabric_test
+      external:
+        name: fabric_test

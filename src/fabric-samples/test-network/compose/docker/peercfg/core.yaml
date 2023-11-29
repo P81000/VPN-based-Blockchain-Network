@@ -504,7 +504,7 @@ vm:
     # settings for docker vms
    docker:
        tls:
-           enabled: false
+           enabled: true
            ca:
                file: docker/ca.crt
            cert:
@@ -514,7 +514,7 @@ vm:
 
         # Enables/disables the standard out/err from chaincode containers for
         # debugging purposes
-       attachStdout: false
+       attachStdout: true
 
         # Parameters on creating docker container.
         # Container may be efficiently created using ipam & dns-server for cluster
@@ -759,7 +759,7 @@ operations:
 ###############################################################################
 metrics:
     # metrics provider is one of statsd, prometheus, or disabled
-    provider: disabled
+    provider: prometheus
 
     # statsd configuration
     statsd:
